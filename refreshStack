@@ -1,0 +1,113 @@
+#!/bin/bash
+#
+# Credits to code originator:
+# https://github.com/alestic/aws-cloudformation-stack-status
+#
+# An auto-refresh watch of CloudFormation stack status
+#   for those of us who live and die by the "Refresh" icon 
+#   while praying for a successful stack creation/update/deletion
+#
+# Improvements:
+# - Color and Watch enabled by default
+# - Added a new parameter, --show-all, to show all events instead of only latest status
+# - Added ResourceStatusReason to output
+# - Removed unnecessary AWS:: and shortened Date/Timestamp to fit more into display
+#
+# Usage:  refreshStack --stack-name $stack 
+# Optional: --region $region --profile $profile --show-all
+#
+# Interrupt with Ctrl-C to exit
+
+region_opt=
+profile_opt=
+show_all_opt=
+stack_names=
+red_font=
+red_background=
+green_font=
+yellow_font=
+underline=
+no_underline=
+no_decoration=
+
+function decorate_text() {
+  red_font='\e[0;31m'
+  red_background='\e[41m'
+  green_font='\e[0;32m'
+  yellow_font='\e[0;33m'
+  underline='\e[4m'
+  no_underline='\e[24m'
+  no_decoration='\e[0m'
+}
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --region)     region_opt="--region $2";               shift 2 ;;
+    --profile)    profile_opt="--profile $2";             shift 2 ;;
+    --stack-name) stack_names="$stack_names $2";          shift 2 ;;
+    --show-all)   show_all_opt="--show-all"; 	          shift  ;;
+    --*)          echo "$0: Unrecognized option: $1" >&2; exit 1  ;;
+    *) break ;;
+  esac
+done
+
+set -- $stack_names $@
+
+decorate_text; 
+
+# watch:
+# -c color
+# -t no title
+# -n interval
+# $0 filename
+# $@ all parameters
+if [ -n "$stack_names" ]; then
+  exec watch -c -t -n1 $0 $region_opt $profile_opt $show_all_opt "$@"
+fi
+
+for stack_name; do
+  aws cloudformation describe-stack-events \
+    $region_opt \
+    $profile_opt \
+    --stack-name "$stack_name" \
+    --output text \
+    --query 'StackEvents[*].[ResourceStatus,LogicalResourceId,ResourceType,Timestamp,ResourceStatusReason]' |
+
+# sort:
+# -k by column
+# -r in reverse
+  sort -k4r |
+
+# perl:
+# -a enables auto-split of input into the @F array
+# -n loops over and does not print input
+# -p loops over and prints input
+# -e specifies Perl expressions.  Other options should not follow this option
+if [ -n "$show_all_opt" ]; then
+  perl -ape 'print $F'
+else
+  perl -ane 'print if !$seen{$F[1]}++'
+fi
+done |
+
+# column:
+# -t create a table by number of columns
+# -s defines column delimiter
+  column -t -s $'\t' |
+  sed -E "s/([A-Z_]+_COMPLETE[A-Z_]*)/`printf        "${green_font}"`\1`printf "${no_decoration}"`/g" |
+  sed -E "s/([A-Z_]+_IN_PROGRESS[A-Z_]*)/`printf     "${yellow_font}"`\1`printf "${no_decoration}"`/g" |
+  sed -E "s/([A-Z_]*ROLLBACK[A-Z_]*)/`printf         "${red_font}"`\1`printf "${no_decoration}"`/g" |
+  sed -E "s/([A-Z_]*FAILED[A-Z_]*)/`printf           "${no_decoration}${red_background}"`\1`printf "${no_decoration}"`/g" |
+  sed -E "s/(AWS::CloudFormation::Stack)/`printf     "${underline}"`\1`printf "${no_decoration}"`/g" |
+
+# Removes "AWS::" to save display space
+  sed -E "s/(AWS::)//g" |
+
+# Shortens Date/Timestamp by removing the first 2 digits of Year, and trailing digits after Seconds
+# ie, # instead of 
+# yyyy-mm-ddThh:mm:ss.xxxxxx+xx:xx
+# it is now only
+# hh:mm:ss
+  sed -E "s/([0-9]{4}-[0-9]{2}-[0-9]{2}T)([0-9]{2}:[0-9]{2}:[0-9]{2})(.{13})/\2/g"
+
+
